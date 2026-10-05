@@ -96,11 +96,9 @@ class SubmissionListItem(BaseModel):
 
 
 class WithdrawRequest(BaseModel):
-    """CR-A: atsaukšanas iemesls, 10–500 rakstzīmes bez sākuma un beigu atstarpēm."""
+    """CR-A: atsaukšanas iemesls, 10–500 rakstzīmes tieši pēc līguma (neapgriež)."""
 
-    reason: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=10, max_length=500)
-    ]
+    reason: Annotated[str, StringConstraints(min_length=10, max_length=500)]
 
 
 class AuditEntry(BaseModel):
