@@ -172,11 +172,14 @@ def get_submission_audit(submission_id: str) -> list[AuditEntry]:
 def withdraw_submission(submission_id: str, data: WithdrawRequest) -> Submission:
     if storage.get(submission_id) is None:
         raise SubmissionNotFound()
-    if not storage.change_status(
-        submission_id, SubmissionStatus.WITHDRAWN.value, WITHDRAWABLE
+    if not storage.change_status_with_audit(
+        submission_id,
+        SubmissionStatus.WITHDRAWN.value,
+        WITHDRAWABLE,
+        "WITHDRAW",
+        data.reason,
     ):
         raise InvalidState()
-    storage.add_audit(submission_id, "WITHDRAW", data.reason)
     # Iemeslu žurnālā neraksta: iedzīvotājs tajā var minēt personas datus.
     logger.info("Iesniegums atsaukts: %s", submission_id)
     return Submission(**storage.get(submission_id))

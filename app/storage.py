@@ -246,20 +246,52 @@ def update_status(submission_id: str, status: str) -> dict | None:
     return record
 
 
-def change_status(submission_id: str, status: str, allowed_from: tuple) -> bool:
-    """Maina statusu tikai no atļautajiem statusiem. Atgriež, vai statuss mainījās.
-
-    Pārbaude un maiņa ir viens vaicājums, lai divi pieprasījumi vienlaikus
-    nevarētu abi pāriet no viena un tā paša statusa.
-    """
+def _change_status(submission_id: str, status: str, allowed_from: tuple) -> bool:
+    # Pārbaude un maiņa ir viens vaicājums, lai divi pieprasījumi vienlaikus
+    # nevarētu abi pāriet no viena un tā paša statusa. Izsauc ar _lock.
     placeholders = ", ".join("?" for _ in allowed_from)
+    # B608 šeit ir kļūdains brīdinājums: f-string ievieto tikai "?" vietturus.
+    cursor = _conn.execute(
+        f"UPDATE submissions SET status = ? WHERE id = ? "  # nosec B608
+        f"AND status IN ({placeholders})",
+        (status, submission_id, *allowed_from),
+    )
+    return cursor.rowcount == 1
+
+
+def change_status(submission_id: str, status: str, allowed_from: tuple) -> bool:
+    """Maina statusu tikai no atļautajiem statusiem. Atgriež, vai statuss mainījās."""
     with _lock:
-        cursor = _conn.execute(
-            f"UPDATE submissions SET status = ? WHERE id = ? "
-            f"AND status IN ({placeholders})",
-            (status, submission_id, *allowed_from),
-        )
-    changed = cursor.rowcount == 1
+        changed = _change_status(submission_id, status, allowed_from)
+    if changed:
+        # Žurnālā tikai ID un statuss. Nekad personas dati vai teksts.
+        logger.info("Statuss mainīts: %s -> %s", submission_id, status)
+    return changed
+
+
+def change_status_with_audit(
+    submission_id: str,
+    status: str,
+    allowed_from: tuple,
+    action: str,
+    detail: str | None = None,
+) -> bool:
+    """Maina statusu un pieraksta auditu kopā: vai nu abi notiek, vai neviens.
+
+    Atgriež, vai statuss mainījās. Ja audita ierakstu neizdodas saglabāt,
+    statusa maiņu atceļ un izņēmumu izmet tālāk.
+    """
+    with _lock:
+        _conn.execute("SAVEPOINT status_with_audit")
+        try:
+            changed = _change_status(submission_id, status, allowed_from)
+            if changed:
+                _insert_audit(submission_id, action, detail)
+        except Exception:
+            _conn.execute("ROLLBACK TO status_with_audit")
+            raise
+        finally:
+            _conn.execute("RELEASE status_with_audit")
     if changed:
         # Žurnālā tikai ID un statuss. Nekad personas dati vai teksts.
         logger.info("Statuss mainīts: %s -> %s", submission_id, status)
@@ -292,10 +324,15 @@ def find_institution(code: str) -> dict | None:
 def add_audit(submission_id: str, action: str, detail: str | None = None) -> None:
     """Audita ieraksts: laiks, darbība, iesnieguma ID un paskaidrojums."""
     with _lock:
-        _conn.execute(
-            "INSERT INTO audit (submissionId, at, action, detail) VALUES (?, ?, ?, ?)",
-            (submission_id, clock.now().isoformat(), action, detail),
-        )
+        _insert_audit(submission_id, action, detail)
+
+
+def _insert_audit(submission_id: str, action: str, detail: str | None) -> None:
+    # Izsauc ar _lock.
+    _conn.execute(
+        "INSERT INTO audit (submissionId, at, action, detail) VALUES (?, ?, ?, ?)",
+        (submission_id, clock.now().isoformat(), action, detail),
+    )
 
 
 def list_audit(submission_id: str) -> list:
