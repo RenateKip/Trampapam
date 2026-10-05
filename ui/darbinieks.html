@@ -19,6 +19,18 @@
     th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { background: #e8ecf1; }
     .count { margin-top: 12px; color: #444; }
+    .withdraw { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-top: 24px; }
+    .withdraw h2 { margin: 0 0 12px; font-size: 1.1rem; color: var(--navy); }
+    .withdraw .row { margin-bottom: 12px; }
+    .withdraw textarea { width: 100%; min-height: 80px; padding: 8px; font: inherit; border: 1px solid var(--line); border-radius: 6px; margin-top: 4px; resize: vertical; }
+    .hint { color: #555; font-size: 0.9rem; margin-top: 4px; }
+    .field-error { color: #b23a1f; font-size: 0.9rem; margin-top: 4px; }
+    .invalid { border-color: #b23a1f !important; }
+    .message { margin-top: 12px; padding: 10px 12px; border-radius: 6px; }
+    .message:empty { display: none; }
+    .message.error { background: #fdece7; border: 1px solid #E76F51; }
+    .message.ok { background: #e6f4f2; border: 1px solid var(--teal); }
+    .id-link { background: none; color: var(--navy); padding: 0; font-weight: 400; text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -56,6 +68,23 @@
       </thead>
       <tbody id="rows"></tbody>
     </table>
+
+    <form class="withdraw" id="withdraw-form" novalidate>
+      <h2>Atsaukt iesniegumu</h2>
+      <div class="row">
+        <label for="withdraw-id">Iesnieguma numurs</label>
+        <input id="withdraw-id" name="id" placeholder="IES-2026-000001" autocomplete="off">
+        <div class="hint">Var arī noklikšķināt uz numura sarakstā.</div>
+      </div>
+      <div class="row">
+        <label for="reason">Atsaukšanas iemesls</label>
+        <textarea id="reason" name="reason"></textarea>
+        <div class="hint">10–500 rakstzīmes.</div>
+        <div class="field-error" data-for="reason"></div>
+      </div>
+      <button type="submit" id="withdraw-submit">Atsaukt</button>
+      <div class="message" id="withdraw-message" role="status"></div>
+    </form>
   </main>
   <script>
     const rows = document.getElementById("rows");
@@ -84,11 +113,102 @@
       count.textContent = "Atrasti: " + data.length;
       for (const s of data) {
         const tr = document.createElement("tr");
-        [s.id, s.status, s.topic, s.receivedAt.slice(0, 10), s.dueDate, s.replyChannel]
+        const idCell = document.createElement("td");
+        const idLink = document.createElement("button");
+        idLink.type = "button";
+        idLink.className = "id-link";
+        idLink.textContent = s.id;
+        idLink.addEventListener("click", () => {
+          withdrawId.value = s.id;
+          reason.focus();
+        });
+        idCell.appendChild(idLink);
+        tr.appendChild(idCell);
+        [s.status, s.topic, s.receivedAt.slice(0, 10), s.dueDate, s.replyChannel]
           .forEach((value) => tr.appendChild(cell(value)));
         rows.appendChild(tr);
       }
     }
+
+    // CR-A: atsaukšana. Pārbaudes dara API, forma tikai parāda API atbildi.
+    const ISSUE_TEXT = {
+      REQUIRED: "Obligāts lauks",
+      INVALID_FORMAT: "Nepareizs garums vai formāts",
+      TOO_LONG: "Pārāk garš teksts",
+    };
+    const ERROR_TEXT = {
+      VALIDATION_ERROR: "Pārbaudiet laukus",
+      NOT_FOUND: "Iesniegums ar šādu numuru nav atrasts",
+      INVALID_STATE: "Šajā statusā iesniegumu nevar atsaukt",
+    };
+    const withdrawForm = document.getElementById("withdraw-form");
+    const withdrawId = document.getElementById("withdraw-id");
+    const reason = document.getElementById("reason");
+    const withdrawButton = document.getElementById("withdraw-submit");
+    const withdrawMessage = document.getElementById("withdraw-message");
+
+    function clearWithdrawErrors() {
+      withdrawForm.querySelectorAll(".field-error").forEach((el) => (el.textContent = ""));
+      withdrawForm.querySelectorAll(".invalid").forEach((el) => el.classList.remove("invalid"));
+      withdrawMessage.className = "message";
+      withdrawMessage.textContent = "";
+    }
+
+    function showWithdrawError(status, body) {
+      const error = (body && body.error) || {};
+      const lines = [`Iesniegums nav atsaukts (HTTP ${status}${error.code ? ", " + error.code : ""})`];
+      if (ERROR_TEXT[error.code]) lines.push(ERROR_TEXT[error.code]);
+      for (const detail of error.details || []) {
+        const text = ISSUE_TEXT[detail.issue] || detail.issue;
+        const target = withdrawForm.querySelector(`.field-error[data-for="${detail.field}"]`);
+        if (target) {
+          target.textContent = text;
+          document.getElementById(detail.field)?.classList.add("invalid");
+        } else {
+          lines.push(`${detail.field}: ${text}`);
+        }
+      }
+      withdrawMessage.className = "message error";
+      withdrawMessage.textContent = lines.join(". ");
+    }
+
+    withdrawForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearWithdrawErrors();
+      const id = withdrawId.value.trim();
+      if (!id) {
+        // Bez numura nav adreses, uz kuru sūtīt pieprasījumu.
+        withdrawMessage.className = "message error";
+        withdrawMessage.textContent = "Norādiet iesnieguma numuru.";
+        withdrawId.classList.add("invalid");
+        return;
+      }
+      // Tukšu iemeslu nesūtām: API pats pasaka, ka tas trūkst.
+      const payload = reason.value === "" ? {} : { reason: reason.value };
+      withdrawButton.disabled = true;
+      try {
+        const response = await fetch(`/submissions/${encodeURIComponent(id)}/withdraw`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        let body = null;
+        try { body = await response.json(); } catch (e) { /* nav JSON */ }
+        if (response.status === 200) {
+          withdrawMessage.className = "message ok";
+          withdrawMessage.textContent = `Iesniegums ${body.id} atsaukts. Statuss: ${body.status}.`;
+          reason.value = "";
+          load();
+        } else {
+          showWithdrawError(response.status, body);
+        }
+      } catch (error) {
+        withdrawMessage.className = "message error";
+        withdrawMessage.textContent = "Neizdevās sazināties ar serveri.";
+      } finally {
+        withdrawButton.disabled = false;
+      }
+    });
 
     document.getElementById("filters").addEventListener("submit", load);
     load();
